@@ -1,0 +1,195 @@
+desc:Dynamic Convolution Amp Sim
+//tags: guitar amplifier convolution
+//author: Joey Steele
+
+/**
+ *  DYNAMIC CONVOLUTION AMP SIM
+ *  
+ *  This Reaper plugin simulates a guitar amp (or really, any system that's
+ *  approximately time-invariant but nonlinear) using Dynamic Convolution.
+ *  Essentially, we can extend the idea of FIR systems and simulate nonlinearity
+ *  by recording impulse responses for many different amplitudes of impulses.
+ *  Then, in the convolution stage, we select the appropriate impulse response
+ *  for the given sample's amplitude.
+ *
+ *  This file must be loaded into Reaper's Effects directory in order to be
+ *  visible to Reaper.
+ *
+ *  Use the `impulse.py` script to generate impulse audio files and process the
+ *  recorded impulse responses into the format required by this plugin. The
+ *  impulse response files need to be placed in the Reaper Data directory, in a
+ *  subdirectory titled `dynconv_irs`.
+ *
+ *  The `Gain` slider controls the gain of the signal *after* the convolution.
+ *  So long as the gain does not cause Reaper's output to clip, this slider has
+ *  exactly linear behavior. The `Pre-Amp Gain` slider controls the gain of the
+ *  signal input to the amp. This slider has nonlinear behavior depending upon 
+ *  the impulse response file, by design.
+ *
+ *  Due to time limitations, the following assumptions are made in this code:
+ *    
+ *    * the block size is 512 (configurable in @init)
+ *    * the sample rate of the impulse responses is the same as the project's
+ */
+
+//// ---------------------------------------------------------------------------
+
+// SLIDERS
+slider1:/dynconv_irs:identity.wav:Amp Model
+slider2:gain_db=0<-120,6,1>Gain (dB)
+slider3:gain_pre_db=-12<-120,12,1>Pre-Amp Gain (dB)
+
+// INPUT / OUTPUT PINS
+in_pin:Mono In
+out_pin:Out L
+out_pin:Out R
+
+//// ---------------------------------------------------------------------------
+// The @slider section is executed whenever a slider changes (and following @init).
+// Here, we need to update the gain values and read the IR file.
+@slider
+
+gain = 10 ^ (gain_db / 20);
+gain_pre = 10 ^ (gain_pre_db / 20);
+
+old_ir_file_handle = ir_file_handle;
+ir_file_handle = file_open(slider1);
+
+// only re-read the impulse response file if a new file was selected
+(ir_file_handle != old_ir_file_handle) ? (
+  amt_read = file_mem(ir_file_handle, 0, irs_size);
+  (amt_read < irs_size) ? (
+    // file is too small--ideally, we'd do some real error handling
+    // for this, we'll just fill in unit impulses for all IRs
+    FILE_ERROR = 1;
+    memset(irs, 0, irs_size);
+    n = 0;
+    loop(num_irs, 
+      irs[n] = 1;
+      n += ir_len;
+    );
+  );
+);
+
+file_close(ir_file_handle);
+
+//// ---------------------------------------------------------------------------
+@init
+
+FILE_ERROR = 0;
+
+// Ideally, we would update this, and all the memory, as the block size changes.
+// But that's overly complicated for this, so just change this hardcoded value
+// if needed.
+block_size = 512;
+
+
+// MEMORY SETUP
+// (JS FX don't have dynamic memory allocation like C. Instead, you're given a
+//  big global array of doubles, and it's up to you to decide what goes where.)
+
+// Setup Impulse Response data
+irs = 0;
+num_irs = 32;
+ir_len = 128;
+irs_size = num_irs * ir_len;
+
+ir_db_spacing = 60 / (num_irs / 2);
+
+// Setup input block data
+in_buf = irs + irs_size;
+in_size = block_size;
+
+conv_size = in_size + ir_len - 1;
+conv_blocks = ceil(conv_size / block_size);
+
+// Setup output block data
+out_buf = in_buf + in_size;
+out_blocks = conv_blocks;
+out_size = out_blocks * block_size;
+
+// Pointer into the current "start" output block.
+out_block_idx = 0;
+
+//// ---------------------------------------------------------------------------
+// The @block section is run at the beginning of every new block.
+// This is where we do the bulk of the processing, pre-computing all the outputs
+// for the next block from the previous input block.
+// Consequently, there's a latency of exactly one block.
+@block
+
+// in_buf is now filled with block_size samples
+// the `out_block_idx`-th out-buffer has just been output
+
+// we'll put the output of the convolution starting in the *next* output block
+// so first, increment out_block_idx
+prev_out_block_idx = out_block_idx;
+out_block_idx += 1;
+(out_block_idx >= out_blocks) ? (out_block_idx %= out_blocks);
+
+// indices into input and output block buffers (for @sample)
+in_spl_idx = 0;
+out_spl_idx = 0;
+out_read_buf = out_buf + out_block_idx * block_size;
+
+// zero out the buffer that was just output
+prev_out_read_buf = out_buf + prev_out_block_idx * block_size;
+memset(prev_out_read_buf, 0, block_size);
+
+// now, we'll do the convolution
+// add the scaled IR for each input sample
+out_offset = out_block_idx * block_size;
+n = 0;
+loop (block_size,
+  xn = in_buf[n];
+  
+  // compute the index of the ir for this sample
+  (xn > 0) ? (
+    xn_db = 20 * log10(xn);
+    ir_idx_offset = 0;
+  ) : (
+    xn_db = 20 * log10(-xn);
+    ir_idx_offset = num_irs / 2;
+  );
+
+  // anything quieter than -60 dB just uses its IR
+  xn_db = max(-60, xn_db);
+
+  ir_idx = max(0, floor(-xn_db / ir_db_spacing)) + ir_idx_offset;
+  (ir_idx < 0 || ir_idx >= num_irs) ? (DBG_BAD_IR_IDX = ir_idx);
+
+  // exact memory location of the beginning of the appropriate ir
+  irx = irs + ir_idx * ir_len;
+
+  // the convolution itself
+  k = 0;
+  conv_out_idx = out_offset + n;
+
+  loop (ir_len,
+    hk = irx[k];
+    out_buf[conv_out_idx] += xn * hk;
+
+    k += 1;
+    conv_out_idx += 1;
+    (conv_out_idx >= out_size) ? (conv_out_idx %= out_size);
+  );
+
+  n += 1;
+);
+
+//// ---------------------------------------------------------------------------
+// This section is run on every sample. This does minimal processing.
+@sample
+
+// spl0 contains the value of the input sample
+in_buf[in_spl_idx] = spl0 * gain_pre;
+out_spl = out_read_buf[out_spl_idx] * gain;
+
+// spl0 and spl1 now contain the values of the outputs
+spl0 = out_spl;
+spl1 = out_spl;
+
+// increment the indices into the input and output block buffers
+in_spl_idx += 1;
+out_spl_idx += 1;
+
