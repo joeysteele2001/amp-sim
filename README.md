@@ -8,6 +8,21 @@ In this project, I built a guitar amp simulator plugin for the [Reaper DAW](http
 The amp sim is inspired from the built-in JSFX plugins called `Convolution Amp/Cab Modeler` and `Convolution Dual Amp Modeler`, which simulate mono and stereo audio from guitar amps using a simple FIR system.
 My project uses Dynamic Convolution to simulate the nonlinearity of amplifiers.
 
+![A screenshot of the user interface for the Dynamic Convolution Amp Sim plugin.](screenshot.png)
+
+## Demo
+
+I have uploaded a short video to [YouTube](https://youtu.be/lEtmua_1R3E) showing the sounds the plugin can make.
+I downloaded a clean guitar sound from [FreeSound](https://freesound.org/people/loudernoises/sounds/453384/) and applied my four dynamic impulse response models to it in this order:
+
+1. `identity`
+2. `mac`
+3. `bedroom`
+4. `clip`
+
+More information on the impulse responses is located in the [Recording Impulse Responses](#recording-impulse-responses) section.
+Note that I also placed a dynamic compressor effect before the amp sim.
+
 ## Using the Plugin
 
 The plugin is located in the `dynconv` file (JSFX files annoyingly don't use an extension).
